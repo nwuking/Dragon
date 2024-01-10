@@ -24,3 +24,4 @@ Cargo.lock
 /src/cpp
 
 build.rs
+/tests/*.log.*

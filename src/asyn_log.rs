@@ -2,7 +2,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fs,
     hash::{Hash, Hasher},
-    io::{stderr, Write},
+    io::{stderr, stdout, Write},
     path,
     sync::{mpsc, Once},
     thread,
@@ -78,11 +78,23 @@ impl log::Log for LoggerInner {
         thread_id.hash(&mut hasher);
         let tid = hasher.finish();
 
-        // TODO 格式化日志
-        let msg = format!("{} {} [{}] {}\n", now, tid, record.level(), record.args());
+        static LOG_LEVEL_STR: [&str; 6] = ["None", "E", "W", "I", "D", "T"];
+
+        // 年-月-日 时:分:秒.毫秒格式化时间
+        let now = now.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+
+        // 格式化日志
+        let msg = format!(
+            "{} {} [{}]-[{}] {}\n",
+            now,
+            tid,
+            LOG_LEVEL_STR[record.level() as usize],
+            record.target(),
+            record.args()
+        );
         if self.cfg.enable_console {
             // TODO 区分platform 打印到console
-            print!("{}", msg);
+            write!(stdout(), "{}", msg).unwrap();
         }
 
         if let Some(tx) = &self.tx {
@@ -179,7 +191,7 @@ impl LoggerInner {
                 }
                 Err(e) => {
                     let _ = writeln!(stderr(), "recv error: {}", e);
-                    // break;
+                    break;
                 }
             }
         }
@@ -195,6 +207,11 @@ impl LoggerInner {
         if self.file_bytes >= self.cfg.file_max_size {
             for i in (0..self.cfg.file_max_count - 1).rev() {
                 let src = format!("{}dragon.log.{}", self.cfg.dir, i);
+                // 判断源文件是否存在
+                if !path::Path::new(&src).exists() {
+                    continue;
+                }
+
                 let dst = format!("{}dragon.log.{}", self.cfg.dir, i + 1);
                 match fs::rename(src, dst) {
                     Ok(_) => {
@@ -207,6 +224,7 @@ impl LoggerInner {
                         {
                             Ok(file) => {
                                 ff = Some(file);
+                                self.file_bytes = 0;
                             }
                             Err(e) => {
                                 let _ = writeln!(stderr(), "open file error: {}", e);
@@ -222,5 +240,98 @@ impl LoggerInner {
             }
         }
         ff
+    }
+}
+
+// 测试私有函数
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use log::Log;
+
+    use super::*;
+
+    #[test]
+    fn test_start() {
+        let mut logger = LoggerInner::new();
+        logger.cfg.dir = String::from("./tests/");
+        logger.cfg.file_max_size = 10;
+        logger.cfg.file_max_count = 3;
+        logger.start().unwrap();
+    }
+
+    #[test]
+    fn test_roll_file() {
+        let mut logger = LoggerInner::new();
+        logger.cfg.dir = String::from("./tests/");
+        logger.cfg.file_max_size = 10;
+        logger.cfg.file_max_count = 3;
+        logger.file_handler = Some(fs::File::create("./tests/dragon.log.0").unwrap());
+
+        for _ in 0..4 {
+            logger.file_bytes = 10;
+            logger.roll_file();
+            assert_eq!(logger.file_bytes, 0);
+        }
+    }
+
+    #[test]
+    fn test_run() {
+        let mut logger = LoggerInner::new();
+        logger.cfg.dir = String::from("./tests");
+        logger.cfg.file_max_size = 10;
+        logger.cfg.file_max_count = 3;
+        logger.file_handler = Some(fs::File::create("./tests/dragon.log.0").unwrap());
+        logger.start = true;
+
+        let (tx, rx) = mpsc::sync_channel::<String>(1024);
+
+        let _ = thread::Builder::new()
+            .name("test_run".to_string())
+            .spawn(move || {
+                logger.run(rx);
+            })
+            .unwrap();
+
+        thread::sleep(Duration::from_millis(100));
+
+        tx.send(String::from("hello\n")).unwrap();
+        tx.send(String::from("world\n")).unwrap();
+
+        thread::sleep(Duration::from_millis(100));
+        tx.send(String::from("nwuking\n")).unwrap();
+        tx.send(true.to_string()).unwrap();
+
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_log() {
+        let mut logger = LoggerInner::new();
+        logger.cfg.dir = String::from("./tests");
+        logger.cfg.file_max_size = 10;
+        logger.cfg.file_max_count = 3;
+        logger.cfg.enable_console = true;
+
+        let record = log::Record::builder()
+            .args(format_args!("hello"))
+            .level(log::Level::Info)
+            .target("test_log")
+            .file(Some("test_log"))
+            .line(Some(1))
+            .module_path(Some("test_log"))
+            .build();
+        logger.log(&record);
+
+        let record = log::Record::builder()
+            .args(format_args!("world"))
+            .level(log::Level::Error)
+            .target("test_log")
+            .file(Some("test_log"))
+            .line(Some(1))
+            .module_path(Some("test_log"))
+            .build();
+        logger.log(&record);
     }
 }
