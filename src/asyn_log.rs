@@ -26,6 +26,7 @@ impl Logger {
 
                 let (tx, rx) = mpsc::sync_channel::<String>(1024);
                 LOGGER.tx = Some(tx);
+                LOGGER.start = true;
 
                 thread::spawn(move || {
                     LOGGER.run(rx);
@@ -39,16 +40,26 @@ impl Logger {
 
 #[derive(Clone)]
 pub struct LogCfg {
-    // TODO
-    level: log::LevelFilter,
-    enable_console: bool,
-    dir: String,
-    file_max_size: usize,
-    file_max_count: usize,
+    pub level: log::LevelFilter,
+    pub enable_console: bool,
+    pub dir: String,
+    pub file_max_size: usize,
+    pub file_max_count: usize,
+}
+
+impl LogCfg {
+    pub const fn new() -> Self {
+        Self {
+            level: log::LevelFilter::Info,
+            enable_console: false,
+            dir: String::new(),
+            file_max_size: 0,
+            file_max_count: 0,
+        }
+    }
 }
 
 struct LoggerInner {
-    // TODO
     cfg: LogCfg,
     start: bool,
     file_handler: Option<fs::File>,
@@ -98,9 +109,7 @@ impl log::Log for LoggerInner {
         }
 
         if let Some(tx) = &self.tx {
-            let _ = match tx.send(msg) {
-                _ => {}
-            };
+            tx.send(msg).unwrap();
         }
     }
 }
@@ -108,13 +117,7 @@ impl log::Log for LoggerInner {
 impl LoggerInner {
     const fn new() -> Self {
         Self {
-            cfg: LogCfg {
-                level: log::LevelFilter::Info,
-                enable_console: false,
-                dir: String::new(),
-                file_max_size: 0,
-                file_max_count: 0,
-            },
+            cfg: LogCfg::new(),
             start: false,
             file_handler: None,
             file_bytes: 0,
@@ -158,14 +161,17 @@ impl LoggerInner {
                             0
                         }
                     };
-                    self.roll_file()
+                    self.start = true;
+                    Some(file)
                 }
 
                 Err(e) => {
                     let _ = writeln!(stderr(), "open dir error: {}", e);
                     None
                 }
-            }
+            };
+
+            self.roll_file();
         }
 
         Ok(())
@@ -181,6 +187,8 @@ impl LoggerInner {
                         match file.write_all(msg.as_bytes()) {
                             Ok(_) => {
                                 self.file_bytes += msg.len();
+                                // 检查文件大小
+                                self.roll_file();
                             }
                             Err(e) => {
                                 let _ = writeln!(stderr(), "write file error: {}", e);
@@ -201,9 +209,7 @@ impl LoggerInner {
         self.start = false;
     }
 
-    fn roll_file(&mut self) -> Option<fs::File> {
-        // TODO
-        let mut ff = None;
+    fn roll_file(&mut self) {
         if self.file_bytes >= self.cfg.file_max_size {
             for i in (0..self.cfg.file_max_count - 1).rev() {
                 let src = format!("{}dragon.log.{}", self.cfg.dir, i);
@@ -223,23 +229,20 @@ impl LoggerInner {
                             .open(format!("{}dragon.log.0", self.cfg.dir))
                         {
                             Ok(file) => {
-                                ff = Some(file);
+                                self.file_handler = Some(file);
                                 self.file_bytes = 0;
                             }
                             Err(e) => {
                                 let _ = writeln!(stderr(), "open file error: {}", e);
-                                // None?
                             }
                         };
                     }
                     Err(e) => {
                         let _ = writeln!(stderr(), "rename file error: {}", e);
-                        // None?
                     }
                 }
             }
         }
-        ff
     }
 }
 
